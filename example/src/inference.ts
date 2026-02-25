@@ -21,6 +21,24 @@ export interface RecognitionEntry {
   recConf: number
 }
 
+export interface InferenceLatencyBreakdown {
+  detectionPreprocessMs: number
+  detectionInferenceMs: number
+  detectionPostprocessMs: number
+  detectionTotalMs: number
+  recognitionCropMs: number
+  recognitionPreprocessMs: number
+  recognitionInferenceMs: number
+  recognitionDecodeMs: number
+  recognitionLoopMs: number
+  recognitionOtherMs: number
+  recognitionTotalMs: number
+  parseMs: number
+  totalMs: number
+  boxesDetected: number
+  cropsProcessed: number
+}
+
 export interface InferenceResult {
   boxes: DetectionBox[]
   texts: RecognitionEntry[]
@@ -29,6 +47,7 @@ export interface InferenceResult {
   unit: string | null
   recConf: number
   timeMs: number
+  latency: InferenceLatencyBreakdown
 }
 
 interface DetPreprocessResult {
@@ -523,14 +542,20 @@ export async function runInference(
   const recTargetH = recInputShape[1]
   const recTargetW = recInputShape[2]
 
+  const detPreprocessStartedAt = nowMs()
   const detPrep = preprocessDetection(image, detInputSize)
+  const detectionPreprocessMs = nowMs() - detPreprocessStartedAt
+
+  const detInferenceStartedAt = nowMs()
   const detOutputs = await detModel.run([detPrep.tensor])
+  const detectionInferenceMs = nowMs() - detInferenceStartedAt
 
   if (detOutputs.length === 0) {
     throw new Error('Detection model returned no outputs.')
   }
 
   const detRaw = toFloat32Array(detOutputs[0])
+  const detPostprocessStartedAt = nowMs()
   const boxes = postprocessDetection(
     detRaw,
     detOutputShape,
@@ -542,23 +567,42 @@ export async function runInference(
     confThresh,
     iouThresh
   )
+  const detectionPostprocessMs = nowMs() - detPostprocessStartedAt
+  const detectionTotalMs =
+    detectionPreprocessMs + detectionInferenceMs + detectionPostprocessMs
 
   const texts: RecognitionEntry[] = []
+  let recognitionCropMs = 0
+  let recognitionPreprocessMs = 0
+  let recognitionInferenceMs = 0
+  let recognitionDecodeMs = 0
+  let cropsProcessed = 0
+  const recognitionLoopStartedAt = nowMs()
 
   for (let i = 0; i < boxes.length; i += 1) {
+    const cropStartedAt = nowMs()
     const crop = cropRgb(image, boxes[i])
+    recognitionCropMs += nowMs() - cropStartedAt
     if (crop == null) {
       continue
     }
+    cropsProcessed += 1
 
+    const recPreprocessStartedAt = nowMs()
     const recTensor = preprocessRecognition(crop, recTargetH, recTargetW)
+    recognitionPreprocessMs += nowMs() - recPreprocessStartedAt
+
+    const recInferenceStartedAt = nowMs()
     const recOutputs = await recModel.run([recTensor])
+    recognitionInferenceMs += nowMs() - recInferenceStartedAt
     if (recOutputs.length === 0) {
       continue
     }
 
+    const recDecodeStartedAt = nowMs()
     const recRaw = toFloat32Array(recOutputs[0])
     const decoded = ctcGreedyDecode(recRaw, recOutputShape, charDict)
+    recognitionDecodeMs += nowMs() - recDecodeStartedAt
 
     texts.push({
       text: decoded.text,
@@ -566,11 +610,22 @@ export async function runInference(
       recConf: decoded.confidence,
     })
   }
+  const recognitionLoopMs = nowMs() - recognitionLoopStartedAt
+  const recognitionAccountedMs =
+    recognitionCropMs +
+    recognitionPreprocessMs +
+    recognitionInferenceMs +
+    recognitionDecodeMs
+  const recognitionOtherMs = Math.max(0, recognitionLoopMs - recognitionAccountedMs)
+  const recognitionTotalMs = recognitionLoopMs
 
   const combined = texts.length > 0 ? texts.map((item) => item.text).join(' | ') : '(no detection)'
   const bestRecConf = texts.reduce((best, item) => Math.max(best, item.recConf), 0)
 
+  const parseStartedAt = nowMs()
   const parsed = texts.length > 0 ? parseWeight(combined) : { value: null, unit: null }
+  const parseMs = nowMs() - parseStartedAt
+  const totalMs = nowMs() - startedAt
 
   return {
     boxes,
@@ -579,6 +634,23 @@ export async function runInference(
     value: parsed.value,
     unit: parsed.unit,
     recConf: bestRecConf,
-    timeMs: nowMs() - startedAt,
+    timeMs: totalMs,
+    latency: {
+      detectionPreprocessMs,
+      detectionInferenceMs,
+      detectionPostprocessMs,
+      detectionTotalMs,
+      recognitionCropMs,
+      recognitionPreprocessMs,
+      recognitionInferenceMs,
+      recognitionDecodeMs,
+      recognitionLoopMs,
+      recognitionOtherMs,
+      recognitionTotalMs,
+      parseMs,
+      totalMs,
+      boxesDetected: boxes.length,
+      cropsProcessed,
+    },
   }
 }

@@ -33,6 +33,15 @@ interface ImageDecoderSpec {
   decodeImage(path: string, maxDimension: number): Promise<DecodedImagePayload>
 }
 
+interface DetectLatencyBreakdown {
+  decodeImageMs: number
+  base64DecodeMs: number
+  imageBuildMs: number
+  inputPrepareMs: number
+  inferenceCallMs: number
+  endToEndMs: number
+}
+
 const ImageDecoder = NativeModules.ImageDecoder as ImageDecoderSpec | undefined
 
 const BASE64_ALPHABET =
@@ -57,6 +66,20 @@ function modelStateToMessage(state: 'loading' | 'loaded' | 'error'): string {
     return 'Loaded'
   }
   return 'Error'
+}
+
+function nowMs(): number {
+  if (globalThis.performance?.now != null) {
+    return globalThis.performance.now()
+  }
+  return Date.now()
+}
+
+function formatMs(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) {
+    return '-'
+  }
+  return `${value.toFixed(1)} ms`
 }
 
 function decodeBase64ToBytes(base64: string): Uint8Array {
@@ -119,6 +142,7 @@ export default function App(): React.ReactNode {
   const [isDetecting, setIsDetecting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [result, setResult] = React.useState<InferenceResult | null>(null)
+  const [detectLatency, setDetectLatency] = React.useState<DetectLatencyBreakdown | null>(null)
 
   React.useEffect(() => {
     requestPermission()
@@ -147,6 +171,7 @@ export default function App(): React.ReactNode {
     try {
       setError(null)
       setResult(null)
+      setDetectLatency(null)
       const photo = await cameraRef.current.takePhoto({
         enableShutterSound: true,
       })
@@ -159,6 +184,7 @@ export default function App(): React.ReactNode {
   const onRetake = React.useCallback(() => {
     setCapturedPhoto(null)
     setResult(null)
+    setDetectLatency(null)
     setError(null)
   }, [])
 
@@ -177,19 +203,42 @@ export default function App(): React.ReactNode {
     }
 
     try {
+      const detectStartedAt = nowMs()
       setIsDetecting(true)
       setError(null)
       setResult(null)
+      setDetectLatency(null)
 
+      const decodeStartedAt = nowMs()
       const decoded = await ImageDecoder.decodeImage(capturedPhoto.path, 1280)
+      const decodeImageMs = nowMs() - decodeStartedAt
+
+      const base64DecodeStartedAt = nowMs()
+      const decodedBytes = decodeBase64ToBytes(decoded.rgbBase64)
+      const base64DecodeMs = nowMs() - base64DecodeStartedAt
+
+      const imageBuildStartedAt = nowMs()
       const image: RgbImage = {
         width: decoded.width,
         height: decoded.height,
-        data: decodeBase64ToBytes(decoded.rgbBase64),
+        data: decodedBytes,
       }
+      const imageBuildMs = nowMs() - imageBuildStartedAt
 
+      const inferenceStartedAt = nowMs()
       const inference = await runInference(image, detModel, recModel, CHAR_DICT)
+      const inferenceCallMs = nowMs() - inferenceStartedAt
+      const endToEndMs = nowMs() - detectStartedAt
+
       setResult(inference)
+      setDetectLatency({
+        decodeImageMs,
+        base64DecodeMs,
+        imageBuildMs,
+        inputPrepareMs: decodeImageMs + base64DecodeMs + imageBuildMs,
+        inferenceCallMs,
+        endToEndMs,
+      })
     } catch (e) {
       setError(`Detection failed: ${formatError(e)}`)
     } finally {
@@ -319,7 +368,65 @@ export default function App(): React.ReactNode {
             <Text style={styles.resultLine}>
               OCR confidence: {result.recConf.toFixed(3)}
             </Text>
-            <Text style={styles.resultLine}>Latency: {result.timeMs.toFixed(0)} ms</Text>
+            <Text style={styles.resultSectionTitle}>Latency Breakdown</Text>
+            <Text style={styles.resultLine}>
+              End-to-end detect(): {formatMs(detectLatency?.endToEndMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              decodeImage (native): {formatMs(detectLatency?.decodeImageMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              base64 -> RGB bytes: {formatMs(detectLatency?.base64DecodeMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              RGB object build: {formatMs(detectLatency?.imageBuildMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Input prep total: {formatMs(detectLatency?.inputPrepareMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              runInference() call: {formatMs(detectLatency?.inferenceCallMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Pipeline total: {formatMs(result.latency.totalMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Detection total: {formatMs(result.latency.detectionTotalMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Detection preprocess: {formatMs(result.latency.detectionPreprocessMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Detection inference: {formatMs(result.latency.detectionInferenceMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Detection postprocess: {formatMs(result.latency.detectionPostprocessMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Recognition total loop: {formatMs(result.latency.recognitionTotalMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Recognition crop: {formatMs(result.latency.recognitionCropMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Recognition preprocess: {formatMs(result.latency.recognitionPreprocessMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Recognition inference: {formatMs(result.latency.recognitionInferenceMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Recognition decode: {formatMs(result.latency.recognitionDecodeMs)}
+            </Text>
+            <Text style={styles.resultLine}>
+              Recognition other/overhead: {formatMs(result.latency.recognitionOtherMs)}
+            </Text>
+            <Text style={styles.resultLine}>Parse weight: {formatMs(result.latency.parseMs)}</Text>
+            <Text style={styles.resultLine}>
+              Crops processed: {result.latency.cropsProcessed}/{result.latency.boxesDetected}
+            </Text>
+            <Text style={styles.resultLine}>
+              Legacy total latency: {result.timeMs.toFixed(1)} ms
+            </Text>
           </View>
         )}
       </ScrollView>
@@ -436,6 +543,12 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
     fontSize: 28,
     fontWeight: '800',
+  },
+  resultSectionTitle: {
+    color: '#93c5fd',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 8,
   },
   resultLine: {
     color: '#e2e8f0',
