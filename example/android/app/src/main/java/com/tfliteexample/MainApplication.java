@@ -1,13 +1,17 @@
 package com.tfliteexample;
 
 import android.app.Application;
-import com.facebook.react.PackageList;
 import com.facebook.react.ReactApplication;
 import com.facebook.react.ReactNativeHost;
 import com.facebook.react.ReactPackage;
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;
 import com.facebook.react.defaults.DefaultReactNativeHost;
+import com.facebook.react.shell.MainReactPackage;
 import com.facebook.soloader.SoLoader;
+import com.mrousavy.camera.react.CameraPackage;
+import com.tflite.TflitePackage;
+import com.worklets.WorkletsPackage;
+import java.util.ArrayList;
 import java.util.List;
 
 public class MainApplication extends Application implements ReactApplication {
@@ -21,10 +25,12 @@ public class MainApplication extends Application implements ReactApplication {
 
         @Override
         protected List<ReactPackage> getPackages() {
-          @SuppressWarnings("UnnecessaryLocalVariable")
-          List<ReactPackage> packages = new PackageList(this).getPackages();
-          // Packages that cannot be autolinked yet can be added manually here, for example:
-          // packages.add(new MyReactNativePackage());
+          List<ReactPackage> packages = new ArrayList<>();
+          packages.add(new MainReactPackage());
+          packages.add(new TflitePackage());
+          packages.add(new CameraPackage());
+          packages.add(new WorkletsPackage());
+          packages.add(new ImageDecoderPackage());
           return packages;
         }
 
